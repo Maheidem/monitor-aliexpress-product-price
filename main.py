@@ -3,6 +3,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 import smtplib
 import time
+import configparser
 
 # Set list of product URLs and desired prices
 products = {
@@ -39,6 +40,12 @@ desired_price =  2700
 
 # Create webdriver object
 driver = webdriver.Chrome()
+
+# Read email username and password from configuration file
+config = configparser.ConfigParser()
+config.read('config.cfg')
+sender_email = config.get('Email', 'username')
+sender_password = config.get('Email', 'password')
 
 # Define function to check price
 def check_price(products):
