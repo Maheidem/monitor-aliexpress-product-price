@@ -10,10 +10,15 @@ from datetime import datetime
 import json
 import os
 
+# #defining path for files
+# conf_email_credential_path = 'monitor-aliexpress-product-price/config.cfg'
+# parquet_history_path = 'monitor-aliexpress-product-price/prices.parquet'
+# product_list_json_path = 'monitor-aliexpress-product-price/products.json'
+
 #defining path for files
-conf_email_credential_path = 'monitor-aliexpress-product-price/config.cfg'
-parquet_history_path = 'monitor-aliexpress-product-price/prices.parquet'
-product_list_json_path = 'monitor-aliexpress-product-price/products.json'
+conf_email_credential_path = 'config.cfg'
+parquet_history_path = 'prices.parquet'
+product_list_json_path = 'products.json'
 
 # Create webdriver object
 options = webdriver.ChromeOptions()
@@ -110,7 +115,7 @@ def main():
         current_prices = check_price(products)
         send_email_alert(current_prices)
         print("Waiting for an hour before checking prices again...")
-        time.sleep(5) # Wait for an hour
+        time.sleep(3600) # Wait for an hour
 
 # Run main function        
 if __name__ == "__main__":
