@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 import json
 import os, sys
+from multiprocessing import Pool, cpu_count
 
 from loguru import logger
 
@@ -31,6 +32,8 @@ def load_global_conf_vars():
     sender_password = config.get('Email', 'password')
     global run_interval
     run_interval = int(config.get('Interval','interval'))
+    global n_cpus
+    n_cpus = int(config.get('Multiprocessing','cpus'))
 
 
 def set_chrome_options() -> None:
@@ -44,35 +47,55 @@ def set_chrome_options() -> None:
     chrome_prefs = {}
     chrome_options.experimental_options["prefs"] = chrome_prefs
     chrome_prefs["profile.default_content_settings"] = {"images": 2}
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-setuid-sandbox")
+    chrome_options.add_argument("--disable-accelerated-2d-canvas")
+    chrome_options.add_argument("--disable-accelerated-jpeg-decoding")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--no-zygote")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu-sandbox")
     return chrome_options
 
+# Define function to check price for a single product URL
+def check_single_price(args):
+    product, url, loop_id = args
+    prices = pd.DataFrame(columns=['id', 'loop_id', 'product', 'url', 'price', 'datetime'])
+    driver = webdriver.Chrome(options=set_chrome_options())
+    try:
+        # Load product page
+        driver.get(url)
+        logger.debug(f"PID:{os.getpid()} - Checking price for {product} at {url}")
+        # Find price element
+        try:
+            price_element = driver.find_element(By.CLASS_NAME, 'uniform-banner-box-price')
+        except:
+            price_element = driver.find_element(By.CLASS_NAME, 'product-price-value')
+        # Get price text and convert to float
+        price_text = price_element.text.replace("R$ ", "").replace('.', '').replace(',', '.')
+        price = float(price_text)
+        # Add price and datetime to DataFrame
+        now = datetime.now()
+        prices = pd.concat([prices, pd.DataFrame({'id': [str(uuid.uuid4())], 'loop_id': [loop_id], 'product': [product], 'url': [url], 'price': [price], 'datetime': [now]})], ignore_index=True)
+    except:
+        logger.error(f'PID:{os.getpid()} - The URL - {url} gave an error')
+    driver.quit()
+    return prices
 
-
-# Define function to check price
+# Define function to check price for multiple products and URLs using multiprocessing
 def check_price(products):
     prices = pd.DataFrame(columns=['id', 'loop_id', 'product', 'url', 'price', 'datetime'])
     loop_id = str(uuid.uuid4())
+    args_list = []
     for product in products:
         urls = products[product]["urls"]
-        desired_price = products[product]["desired_price"]
         for url in urls:
-            try:
-                # Load product page
-                driver.get(url)
-                logger.debug(f"PID:{os.getpid()} - Checking price for {product} at {url}")
-                # Find price element
-                try:
-                    price_element = driver.find_element(By.CLASS_NAME, 'uniform-banner-box-price')
-                except:
-                    price_element = driver.find_element(By.CLASS_NAME, 'product-price-value')
-                # Get price text and convert to float
-                price_text = price_element.text.replace("R$ ", "").replace('.', '').replace(',', '.')
-                price = float(price_text)
-                # Add price and datetime to DataFrame
-                now = datetime.now()
-                prices = pd.concat([prices, pd.DataFrame({'id': [str(uuid.uuid4())], 'loop_id': [loop_id], 'product': [product], 'url': [url], 'price': [price], 'datetime': [now]})], ignore_index=True)
-            except:
-                logger.error(f'PID:{os.getpid()} - The URL - {url} gave an error')
+            args_list.append((product, url, loop_id))
+    with Pool(n_cpus) as p:
+        results = p.map(check_single_price, args_list)
+    prices = pd.concat(results, ignore_index=True)
+    # Write prices
     
     # Write prices to parquet file
     file_path = parquet_history_path
@@ -165,5 +188,4 @@ def main():
 
 # Run main function        
 if __name__ == "__main__":
-    driver = webdriver.Chrome(options=set_chrome_options())
     main()
