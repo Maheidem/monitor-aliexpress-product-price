@@ -1,4 +1,5 @@
 # Import modules
+from selenium.webdriver.chrome.options import Options
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 import smtplib
@@ -6,30 +7,46 @@ import time
 import configparser
 import pandas as pd
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
-import os
+import os, sys
 
-# #defining path for files
-# conf_email_credential_path = 'monitor-aliexpress-product-price/config.cfg'
-# parquet_history_path = 'monitor-aliexpress-product-price/prices.parquet'
-# product_list_json_path = 'monitor-aliexpress-product-price/products.json'
+from loguru import logger
+
+# Filter out logs with severity lower than ERROR
+logger.add(sys.stderr, level="ERROR")
 
 #defining path for files
-conf_email_credential_path = 'config.cfg'
-parquet_history_path = 'prices.parquet'
-product_list_json_path = 'products.json'
-
-# Create webdriver object
-options = webdriver.ChromeOptions()
-options.add_argument('headless')
-driver = webdriver.Chrome(options=options)
+conf_email_credential_path = 'data/config.cfg'
+parquet_history_path = 'data/prices.parquet'
+product_list_json_path = 'data/products.json'
 
 # Read email username and password from configuration file
-config = configparser.ConfigParser()
-config.read(conf_email_credential_path)
-sender_email = config.get('Email', 'username')
-sender_password = config.get('Email', 'password')
+def load_global_conf_vars():
+    config = configparser.ConfigParser()
+    config.read(conf_email_credential_path)
+    global sender_email
+    sender_email = config.get('Email', 'username')
+    global sender_password
+    sender_password = config.get('Email', 'password')
+    global run_interval
+    run_interval = int(config.get('Interval','interval'))
+
+
+def set_chrome_options() -> None:
+    """Sets chrome options for Selenium.
+    Chrome options for headless browser is enabled.
+    """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_prefs = {}
+    chrome_options.experimental_options["prefs"] = chrome_prefs
+    chrome_prefs["profile.default_content_settings"] = {"images": 2}
+    return chrome_options
+
+
 
 # Define function to check price
 def check_price(products):
@@ -42,7 +59,7 @@ def check_price(products):
             try:
                 # Load product page
                 driver.get(url)
-                print(f"Checking price for {product} at {url}")
+                logger.debug(f"Checking price for {product} at {url}")
                 # Find price element
                 try:
                     price_element = driver.find_element(By.CLASS_NAME, 'uniform-banner-box-price')
@@ -55,28 +72,44 @@ def check_price(products):
                 now = datetime.now()
                 prices = pd.concat([prices, pd.DataFrame({'id': [str(uuid.uuid4())], 'loop_id': [loop_id], 'product': [product], 'url': [url], 'price': [price], 'datetime': [now]})], ignore_index=True)
             except:
-                print(f'The URL - {url} gave an error')
+                logger.error(f'The URL - {url} gave an error')
     
     # Write prices to parquet file
     file_path = parquet_history_path
-    if not os.path.isfile(file_path):
-        prices.to_parquet(file_path, engine='fastparquet', compression='gzip')
-    else:
-        prices.to_parquet(file_path, engine='fastparquet', compression='gzip', append=True)
-    
-    # Return DataFrame of prices
-    return prices
+    # Extract year, month, and day as new columns
+    if prices.shape[0] == 0:
+        return prices
+    else:    
+        prices['year'] = prices['datetime'].dt.year
+        prices['month'] = prices['datetime'].dt.month
+        prices['day'] = prices['datetime'].dt.day
+        if not os.path.isdir(file_path):
+            prices.to_parquet(file_path, engine='fastparquet', compression='gzip', partition_cols=['product', 'year', 'month', 'day'])
+        else:
+            prices.to_parquet(file_path, engine='fastparquet', compression='gzip', partition_cols=['product', 'year', 'month', 'day'], append=True)
+        
+        # Return DataFrame of prices
+        return prices
 
 def check_previous_price(product):
     # Read previous prices from parquet file
     file_path = parquet_history_path
-    if os.path.isfile(file_path):
-        previous_prices = pd.read_parquet(file_path, engine='fastparquet')
+    # Get current year, month and day
+    now = datetime.now() - timedelta(days=1)
+    year = now.strftime('%Y')
+    month = now.strftime('%m')
+    day = now.strftime('%d')
+
+    # Define the filters
+    filters = [('product', '==', product), ('year', '==', year), ('month', '==', month), ('day', '>=', day)]
+
+    if os.path.isdir(file_path):
+        previous_prices = pd.read_parquet(file_path, engine='fastparquet', filters=filters)
         previous_prices = previous_prices[previous_prices['product'] == product]
     else:
         return None
     # Find previous lowest price for product
-    previous_lowest_price = previous_prices.loc[previous_prices['loop_id'] == previous_prices.sort_values(by=['datetime'], ascending=False).head(1)['loop_id'].values[0]].nsmallest(n=1, columns=['price'])
+    previous_lowest_price = previous_prices.loc[previous_prices['loop_id'] == previous_prices.tail(1)['loop_id'].values[0]].nsmallest(n=1, columns=['price'])
     if previous_lowest_price.empty:
         return None
     else:
@@ -84,16 +117,24 @@ def check_previous_price(product):
         price = previous_lowest_price['price']
         return {'product': product, 'urls': urls, 'price': price}
 
+def clean_historical_data(path):
+    df = pd.read_parquet(path)
+    df['prev_price'] = df.groupby(['product', 'url'])['price'].shift(1)
+    df['price_diff'] = df['price'] - df['prev_price']
+    df = df[df["price_diff"] != 0]
+    df.to_parquet(path)
+
 def send_email_alert(prices):
     message = "Subject: Price Alert\n\n"
     for product, group in prices.groupby('product'):
         lowest_price = group.nsmallest(n=1, columns=['price'])
         previous_price = check_previous_price(product)
+        logger.info(f"Product: {lowest_price['product'].values[0]} - Lowest Current Price: {lowest_price['price'].values[0]} | Previous Lowest Price: {previous_price['price'].values[0]}")
         if previous_price is None or lowest_price['price'].values[0] < previous_price['price'].values[0]:
             message += f"The {product} you are tracking is now R$ {lowest_price['price'].values[0]}.\n{lowest_price['url'].values[0]}\n\n"
     if "you are tracking is" not in message:
         return
-    print("Sending email alert...")
+    logger.info("Sending email alert...")
     # Create SMTP object
     server = smtplib.SMTP("smtp.gmail.com", 587)
     # Start TLS encryption
@@ -111,12 +152,18 @@ def main():
     with open(product_list_json_path, 'r') as f:
         products = json.load(f)
     # Check price every hour and send email alert if below desired price 
+
     while True:
+        load_global_conf_vars()
         current_prices = check_price(products)
-        send_email_alert(current_prices)
-        print("Waiting for an hour before checking prices again...")
-        time.sleep(3600) # Wait for an hour
+        if current_prices.shape[0] == 0:
+            logger.error('Unable to read prices in this loop')
+        else:
+            send_email_alert(current_prices)
+            logger.info(f"Waiting for {run_interval} seconds before checking prices again...")
+        time.sleep(run_interval) # Wait for an hour
 
 # Run main function        
 if __name__ == "__main__":
+    driver = webdriver.Chrome(options=set_chrome_options())
     main()

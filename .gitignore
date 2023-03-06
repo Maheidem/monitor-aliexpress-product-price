@@ -1,2 +1,6 @@
 *.cfg
 config.cfg
+*.parquet
+launch.json
+tasks.json
+*.pyc

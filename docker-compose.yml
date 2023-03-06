@@ -1,0 +1,10 @@
+version: '3.4'
+
+services:
+  monitoraliexpressproductprice:
+    image: monitoraliexpressproductprice
+    volumes:
+      - /mnt/c/Users/mahei/OneDrive/Documentos/Python/monitor-aliexpress-product-price/data:/app/data
+    build:
+      context: .
+      dockerfile: ./dockerfile
