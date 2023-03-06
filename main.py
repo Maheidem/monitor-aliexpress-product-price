@@ -59,7 +59,7 @@ def check_price(products):
             try:
                 # Load product page
                 driver.get(url)
-                logger.debug(f"Checking price for {product} at {url}")
+                logger.debug(f"PID:{os.getpid()} - Checking price for {product} at {url}")
                 # Find price element
                 try:
                     price_element = driver.find_element(By.CLASS_NAME, 'uniform-banner-box-price')
@@ -72,7 +72,7 @@ def check_price(products):
                 now = datetime.now()
                 prices = pd.concat([prices, pd.DataFrame({'id': [str(uuid.uuid4())], 'loop_id': [loop_id], 'product': [product], 'url': [url], 'price': [price], 'datetime': [now]})], ignore_index=True)
             except:
-                logger.error(f'The URL - {url} gave an error')
+                logger.error(f'PID:{os.getpid()} - The URL - {url} gave an error')
     
     # Write prices to parquet file
     file_path = parquet_history_path
