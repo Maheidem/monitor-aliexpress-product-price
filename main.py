@@ -114,7 +114,7 @@ def check_price(products):
         # Return DataFrame of prices
         return prices
 
-def check_previous_price(product):
+def check_previous_price(product,current_loop_id):
     # Read previous prices from parquet file
     file_path = parquet_history_path
     # Get current year, month and day
@@ -124,11 +124,11 @@ def check_previous_price(product):
     day = now.strftime('%d')
 
     # Define the filters
-    filters = [('product', '==', product), ('year', '==', year), ('month', '==', month), ('day', '>=', day)]
+    filters = [('product', '==', product), ('year', '==', year), ('month', '==', month), ('day', '>=', day), ('loop_id', '!=', current_loop_id)]
 
     if os.path.isdir(file_path):
         previous_prices = pd.read_parquet(file_path, engine='fastparquet', filters=filters)
-        previous_prices = previous_prices[previous_prices['product'] == product]
+        previous_prices = previous_prices[previous_prices['loop_id'] != current_loop_id]
     else:
         return None
     # Find previous lowest price for product
@@ -151,7 +151,7 @@ def send_email_alert(prices):
     message = "Subject: Price Alert\n\n"
     for product, group in prices.groupby('product'):
         lowest_price = group.nsmallest(n=1, columns=['price'])
-        previous_price = check_previous_price(product)
+        previous_price = check_previous_price(product,lowest_price['loop_id'].values[0])
         logger.info(f"Product: {lowest_price['product'].values[0]} - Lowest Current Price: {lowest_price['price'].values[0]} | Previous Lowest Price: {previous_price['price'].values[0]}")
         if previous_price is None or lowest_price['price'].values[0] < previous_price['price'].values[0]:
             message += f"The {product} you are tracking is now R$ {lowest_price['price'].values[0]}.\n{lowest_price['url'].values[0]}\n\n"
